@@ -1,0 +1,17 @@
+# atm we only allow a subset of AWS Makefile targets
+TARGETS=build-linux-amd64 build-linux-arm64 build-darwin-amd64 build-darwin-arm64
+.PHONY: $(TARGETS)
+
+release:
+	mkdir -p $@
+
+# remapping GOOS/GOARCH tuple to unusual AWS SSM targets
+build-linux-amd64: ssm_target=build-linux
+build-linux-arm64: ssm_target=build-arm64
+
+$(TARGETS): release_name=$(subst -,_,$(subst build-,,$@))
+$(TARGETS): release
+	/bin/bash -c " \
+	make -f makefile $(if $(ssm_target),$(ssm_target),$@); \
+	( cd bin/$(release_name) && zip -r ../../$</amazon-ssm-agent-$(release_name).zip .; ) \
+	"
