@@ -2,6 +2,21 @@
 TARGETS=build-linux-amd64 build-linux-arm64 build-darwin-amd64 build-darwin-arm64
 .PHONY: $(TARGETS)
 
+VERSION=$(shell git describe --tags)
+GOVERSION=1.19
+
+DOCKER_BUILD?=false
+ifeq ($(DOCKER_BUILD), true)
+wrapper=docker \
+       run --rm -it \
+	-w /usr/src/app -v $(PWD):/usr/src/app \
+	golang:$(GOVERSION)
+pre=apt-get update -qq && apt-get install -qq -y zip &&
+else
+wrapper=
+pre=
+endif
+
 release:
 	mkdir -p $@
 
@@ -11,7 +26,10 @@ build-linux-arm64: ssm_target=build-arm64
 
 $(TARGETS): release_name=$(subst -,_,$(subst build-,,$@))
 $(TARGETS): release
-	/bin/bash -c " \
+	$(wrapper) /bin/bash -c " $(pre) \
 	make -f makefile $(if $(ssm_target),$(ssm_target),$@); \
 	( cd bin/$(release_name) && zip -r ../../$</amazon-ssm-agent-$(release_name).zip .; ) \
 	"
+
+show-version:
+	@echo $(VERSION)
