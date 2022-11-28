@@ -1,0 +1,19 @@
+ifdef AWS_PROFILE
+ifeq ($(AWS_PROFILE),tsf-eu)
+    IGNITION_BUCKET=tsf-ignition
+endif
+ifeq ($(AWS_PROFILE),sandbox)
+    IGNITION_BUCKET=tsf-ignition-sandbox
+endif
+
+ifndef IGNITION_BUCKET
+$(error AWS_PROFILE not matching any known bucket)
+else
+sync:
+	AWS_PROFILE=$(AWS_PROFILE) aws s3 sync release "s3://$(IGNITION_BUCKET)/packages/amazon-ssm-agent/$(VERSION)"
+endif
+else
+sync:
+	$(error AWS_PROFILE must be defined)
+endif
+
