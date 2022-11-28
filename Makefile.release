@@ -1,8 +1,8 @@
 # atm we only allow a subset of AWS Makefile targets
 TARGETS=build-linux-amd64 build-linux-arm64 build-darwin-amd64 build-darwin-arm64
-.PHONY: $(TARGETS)
+.PHONY: $(TARGETS) VERSION release
 
-VERSION=$(shell git describe --tags)
+VERSION?=$(shell git describe --tags)
 GOVERSION=1.19
 
 DOCKER_BUILD?=false
@@ -20,12 +20,15 @@ endif
 release:
 	mkdir -p $@
 
+VERSION:
+	echo $(VERSION) > $@
+
 # remapping GOOS/GOARCH tuple to unusual AWS SSM targets
 build-linux-amd64: ssm_target=build-linux
 build-linux-arm64: ssm_target=build-arm64
 
 $(TARGETS): release_name=$(subst -,_,$(subst build-,,$@))
-$(TARGETS): release
+$(TARGETS): release VERSION
 	$(wrapper) /bin/bash -c " $(pre) \
 	make -f makefile $(if $(ssm_target),$(ssm_target),$@); \
 	( cd bin/$(release_name) && zip -r ../../$</amazon-ssm-agent-$(release_name).zip .; ) \
@@ -33,3 +36,11 @@ $(TARGETS): release
 
 show-version:
 	@echo $(VERSION)
+
+clean:
+	make clean
+	rm -rf release/
+	git checkout -- RELEASENOTES.md VERSION agent/version/version.go
+
+# non public Makefile
+-include Makefile.internal
