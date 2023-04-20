@@ -30,8 +30,13 @@ const (
 )
 
 var (
-	iprEmptyCredential                          = credentials.Value{ProviderName: ec2rolecreds.ProviderName}
-	newV4ServiceWithCreds ssmclient.Initializer = ssmclient.NewV4ServiceWithCreds
+	iprEmptyCredential                                 = credentials.Value{ProviderName: ec2rolecreds.ProviderName}
+	newV4ServiceWithCreds        ssmclient.Initializer = ssmclient.NewV4ServiceWithCreds
+	exceptionsForDefaultHostMgmt                       = map[string]struct{}{
+		"AccessDeniedException":        {},
+		"EC2RoleRequestError":          {},
+		"AssumeRoleUnauthorizedAccess": {},
+	}
 )
 
 type IInnerProvider interface {

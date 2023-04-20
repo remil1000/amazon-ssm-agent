@@ -21,6 +21,7 @@ import (
 
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/log"
+	logmocks "github.com/aws/amazon-ssm-agent/agent/mocks/log"
 	"github.com/aws/amazon-ssm-agent/common/identity/credentialproviders/ec2roleprovider/stubs"
 	"github.com/aws/amazon-ssm-agent/common/identity/credentialproviders/ssmclient"
 	"github.com/aws/amazon-ssm-agent/common/identity/credentialproviders/ssmclient/mocks"
@@ -33,9 +34,75 @@ import (
 )
 
 const (
-	IPRProviderName    = "IMDS"
-	SsmEc2ProviderName = "SSM"
+	IPRProviderName                     = "IMDS"
+	SsmEc2ProviderName                  = "SSM"
+	ErrCodeAccessDeniedException        = "AccessDeniedException"
+	ErrCodeEC2RoleRequestError          = "EC2RoleRequestError"
+	ErrCodeAssumeRoleUnauthorizedAccess = "AssumeRoleUnauthorizedAccess"
 )
+
+var (
+	errNoInstanceProfileRole           = awserr.New(ErrCodeEC2RoleRequestError, "Instance profile role not found", nil)
+	instanceProfileRoleAssumeRoleError = awserr.New(ErrCodeAssumeRoleUnauthorizedAccess, "Failed to assume instance profile role", nil)
+	rmirtAccessDeniedError             = awserr.New(ErrCodeAccessDeniedException, "No default host management role", nil)
+	uiiThrottleError                   = awserr.New("RateExceeded", "UpdateInstanceInformation requests throttled", nil)
+	uiiAccessDeniedError               = awserr.New(ErrCodeAccessDeniedException, "Role does not have ssm:UpdateInstanceInformation permission", nil)
+	genericAwsClientError              = fmt.Errorf("generic aws client error")
+)
+
+type testCase struct {
+	testName                         string
+	iprRetrieveErr                   error
+	iprUpdateInstanceInformationErr  error
+	ssmRetrieveErr                   error
+	dhmrUpdateInstanceInformationErr error
+}
+
+func arrangeUpdateInstanceInformationFromTestCase(testCase testCase) (*mocks.ISSMClient, *EC2RoleProvider) {
+	ssmClient := &mocks.ISSMClient{}
+	updateInstanceInfoOutput := &ssm.UpdateInstanceInformationOutput{}
+	if testCase.iprRetrieveErr != nil {
+		ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(updateInstanceInfoOutput, testCase.iprRetrieveErr).Once()
+	}
+
+	if testCase.iprUpdateInstanceInformationErr != nil {
+		ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(updateInstanceInfoOutput, testCase.iprUpdateInstanceInformationErr).Once()
+	}
+
+	if testCase.ssmRetrieveErr != nil {
+		ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(updateInstanceInfoOutput, testCase.ssmRetrieveErr).Once()
+	}
+
+	if testCase.dhmrUpdateInstanceInformationErr != nil {
+		ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(updateInstanceInfoOutput, testCase.dhmrUpdateInstanceInformationErr).Once()
+	}
+
+	newV4ServiceWithCreds = func(log log.T, appConfig *appconfig.SsmagentConfig, credentials *credentials.Credentials, region, defaultEndpoint string) ssmclient.ISSMClient {
+		return ssmClient
+	}
+
+	ec2RoleProvider := &EC2RoleProvider{
+		Log: logmocks.NewMockLog(),
+		InstanceInfo: &ssmec2roleprovider.InstanceInfo{
+			InstanceId: "SomeInstanceId",
+			Region:     "SomeRegion",
+		},
+		Config: &appconfig.SsmagentConfig{
+			Agent: appconfig.AgentInfo{
+				Version: "3.1.0.0",
+			},
+		},
+	}
+
+	iprProvider := &stubs.InnerProvider{ProviderName: IPRProviderName, RetrieveErr: testCase.iprRetrieveErr}
+	ssmProvider := &stubs.InnerProvider{ProviderName: SsmEc2ProviderName, RetrieveErr: testCase.ssmRetrieveErr}
+	ec2RoleProvider.InnerProviders = &EC2InnerProviders{
+		IPRProvider:    iprProvider,
+		SsmEc2Provider: ssmProvider,
+	}
+
+	return ssmClient, ec2RoleProvider
+}
 
 func arrangeUpdateInstanceInformation(err error) (*mocks.ISSMClient, *EC2RoleProvider) {
 	ssmClient := &mocks.ISSMClient{}
@@ -46,7 +113,7 @@ func arrangeUpdateInstanceInformation(err error) (*mocks.ISSMClient, *EC2RolePro
 	}
 
 	ec2RoleProvider := &EC2RoleProvider{
-		Log: log.NewMockLog(),
+		Log: logmocks.NewMockLog(),
 		InstanceInfo: &ssmec2roleprovider.InstanceInfo{
 			InstanceId: "SomeInstanceId",
 			Region:     "SomeRegion",
@@ -178,49 +245,175 @@ func TestEC2RoleProvider_Retrieve_ReturnsIPRCredentials(t *testing.T) {
 }
 
 func TestEC2RoleProvider_Retrieve_ReturnsSSMCredentials(t *testing.T) {
-	// Arrange
-	awsErr := awserr.New("400", "Unauthorized", nil)
-	iprErr := awserr.NewRequestFailure(awsErr, 400, "testRequestId")
-	ssmClient, ec2RoleProvider := arrangeUpdateInstanceInformation(iprErr)
-	ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(&ssm.UpdateInstanceInformationOutput{}, nil)
-	iprProvider := &stubs.InnerProvider{ProviderName: IPRProviderName}
-	ssmProvider := &stubs.InnerProvider{ProviderName: SsmEc2ProviderName}
-	ec2RoleProvider.InnerProviders = &EC2InnerProviders{
-		IPRProvider:    iprProvider,
-		SsmEc2Provider: ssmProvider,
+	testCases := []testCase{
+		{
+			testName:       "NoInstanceProfileRole",
+			iprRetrieveErr: errNoInstanceProfileRole,
+		},
+		{
+			testName:                        "RetrieveIprSuccess_UpdateInstanceInformationAccessDenied",
+			iprUpdateInstanceInformationErr: uiiAccessDeniedError,
+		},
+		{
+			testName:       "RetrieveIprAssumeRoleException",
+			iprRetrieveErr: instanceProfileRoleAssumeRoleError,
+		},
 	}
 
-	// Act
-	creds, err := ec2RoleProvider.Retrieve()
+	for _, tc := range testCases {
+		t.Run(tc.testName, func(t *testing.T) {
+			// Arrange
+			ssmClient, ec2RoleProvider := arrangeUpdateInstanceInformationFromTestCase(tc)
+			ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(&ssm.UpdateInstanceInformationOutput{}, nil).Once()
+			iprProvider := &stubs.InnerProvider{ProviderName: IPRProviderName}
+			ssmProvider := &stubs.InnerProvider{ProviderName: SsmEc2ProviderName}
+			ec2RoleProvider.InnerProviders = &EC2InnerProviders{
+				IPRProvider:    iprProvider,
+				SsmEc2Provider: ssmProvider,
+			}
 
-	//Assert
-	assert.NoError(t, err)
-	assert.Equal(t, ssmProvider.ProviderName, creds.ProviderName)
-	assert.Equal(t, CredentialSourceSSM, ec2RoleProvider.credentialSource)
+			// Act
+			creds, err := ec2RoleProvider.Retrieve()
+
+			//Assert
+			assert.NoError(t, err)
+			assert.Equal(t, ssmProvider.ProviderName, creds.ProviderName)
+			assert.Equal(t, CredentialSourceSSM, ec2RoleProvider.credentialSource)
+		})
+	}
+
 }
 
 func TestEC2RoleProvider_Retrieve_ReturnsEmptyCredentials(t *testing.T) {
-	// Arrange
-	awsErr := awserr.New("400", "Unauthorized", nil)
-	updateInstanceInformationErr := awserr.NewRequestFailure(awsErr, 400, "testRequestId")
-	ssmClient, ec2RoleProvider := arrangeUpdateInstanceInformation(updateInstanceInformationErr)
-	ssmClient.On("UpdateInstanceInformation", mock.Anything).
-		Return(nil, updateInstanceInformationErr).
-		Repeatability = 1
-	iprProvider := &stubs.InnerProvider{ProviderName: IPRProviderName}
-	ssmProvider := &stubs.InnerProvider{ProviderName: SsmEc2ProviderName}
-	ec2RoleProvider.InnerProviders = &EC2InnerProviders{
-		IPRProvider:    iprProvider,
-		SsmEc2Provider: ssmProvider,
+	testCases := []testCase{
+		{
+			testName:       "NoIpr_RetrieveDhmrAccessDenied",
+			iprRetrieveErr: errNoInstanceProfileRole,
+			ssmRetrieveErr: rmirtAccessDeniedError,
+		},
+		{
+			testName:       "IprAssumeRoleErr_RetrieveDhmrAccessDenied",
+			iprRetrieveErr: instanceProfileRoleAssumeRoleError,
+			ssmRetrieveErr: rmirtAccessDeniedError,
+		},
+		{
+			testName:       "NoIpr_RetrieveDhmrInternalServerError",
+			iprRetrieveErr: awserr.New(ErrCodeAssumeRoleUnauthorizedAccess, "Failed to assume instance profile role", nil),
+			ssmRetrieveErr: &ssm.InternalServerError{},
+		},
+		{
+			testName:                        "RetrieveIprSuccess_UpdateInstanceInformationThrottle",
+			iprUpdateInstanceInformationErr: uiiThrottleError,
+		},
+		{
+			testName:                        "NoIpr_RetrieveDhmrSuccess_UpdateInstanceInformationThrottle",
+			iprRetrieveErr:                  errNoInstanceProfileRole,
+			iprUpdateInstanceInformationErr: uiiThrottleError,
+		},
+		{
+			testName:                         "NoIpr_RetrieveDhmrSuccess_UpdateInstanceInformationInternalServerError",
+			iprRetrieveErr:                   errNoInstanceProfileRole,
+			dhmrUpdateInstanceInformationErr: &ssm.InternalServerError{},
+		},
+		{
+			testName:                         "NoIpr_RetrieveDhmrSuccess_UpdateInstanceInformationAccessDenied",
+			iprRetrieveErr:                   errNoInstanceProfileRole,
+			dhmrUpdateInstanceInformationErr: uiiAccessDeniedError,
+		},
+		{
+			testName:                         "NoIpr_RetrieveDhmrSuccess_UpdateInstanceInformationClientError",
+			iprRetrieveErr:                   errNoInstanceProfileRole,
+			dhmrUpdateInstanceInformationErr: genericAwsClientError,
+		},
+		{
+			testName:                        "RetrieveIprSuccess_UpdateInstanceInformationInternalServerError",
+			iprUpdateInstanceInformationErr: &ssm.InternalServerError{},
+		},
+		{
+			testName:                        "RetrieveIprSuccess_UpdateInstanceInformationThrottle",
+			iprUpdateInstanceInformationErr: uiiThrottleError,
+		},
+		{
+			testName:                        "RetrieveIprSuccess_UpdateInstanceInformationClientError",
+			iprUpdateInstanceInformationErr: genericAwsClientError,
+		},
+		{
+			testName:                         "RetrieveIprSuccess_UpdateInstanceInformationAccessDenied_RetrieveDhmrSuccess_UpdateInstanceInformationAccessDenied",
+			iprUpdateInstanceInformationErr:  uiiAccessDeniedError,
+			dhmrUpdateInstanceInformationErr: uiiAccessDeniedError,
+		},
+		{
+			testName:                         "RetrieveIprSuccess_UpdateInstanceInformationAccessDenied_RetrieveDhmrSuccess_UpdateInstanceInformationThrottle",
+			iprUpdateInstanceInformationErr:  uiiAccessDeniedError,
+			dhmrUpdateInstanceInformationErr: uiiThrottleError,
+		},
+		{
+			testName:                         "RetrieveIprSuccess_UpdateInstanceInformationAccessDenied_RetrieveDhmrSuccess_UpdateInstanceInformationInternalServerError",
+			iprUpdateInstanceInformationErr:  uiiAccessDeniedError,
+			dhmrUpdateInstanceInformationErr: &ssm.InternalServerError{},
+		},
+		{
+			testName:                         "RetrieveIprSuccess_UpdateInstanceInformationAccessDenied_RetrieveDhmrSuccess_UpdateInstanceInformationAwsClientError",
+			iprUpdateInstanceInformationErr:  uiiAccessDeniedError,
+			dhmrUpdateInstanceInformationErr: genericAwsClientError,
+		},
 	}
 
-	// Act
-	creds, err := ec2RoleProvider.Retrieve()
+	for _, j := range testCases {
+		t.Run(j.testName, func(t *testing.T) {
+			// Arrange
+			ssmClient := &mocks.ISSMClient{}
+			updateInstanceInfoOutput := &ssm.UpdateInstanceInformationOutput{}
+			if j.iprRetrieveErr != nil {
+				ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(updateInstanceInfoOutput, j.iprRetrieveErr)
+			}
 
-	//Assert
-	assert.Error(t, err)
-	assert.Equal(t, iprEmptyCredential, creds)
-	assert.Equal(t, CredentialSourceEC2, ec2RoleProvider.credentialSource)
+			if j.iprUpdateInstanceInformationErr != nil {
+				ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(updateInstanceInfoOutput, j.iprUpdateInstanceInformationErr)
+			}
+
+			if j.ssmRetrieveErr != nil {
+				ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(updateInstanceInfoOutput, j.ssmRetrieveErr)
+			}
+
+			if j.dhmrUpdateInstanceInformationErr != nil {
+				ssmClient.On("UpdateInstanceInformation", mock.Anything).Return(updateInstanceInfoOutput, j.dhmrUpdateInstanceInformationErr)
+			}
+
+			newV4ServiceWithCreds = func(log log.T, appConfig *appconfig.SsmagentConfig, credentials *credentials.Credentials, region, defaultEndpoint string) ssmclient.ISSMClient {
+				return ssmClient
+			}
+
+			ec2RoleProvider := &EC2RoleProvider{
+				Log: logmocks.NewMockLog(),
+				InstanceInfo: &ssmec2roleprovider.InstanceInfo{
+					InstanceId: "SomeInstanceId",
+					Region:     "SomeRegion",
+				},
+				Config: &appconfig.SsmagentConfig{
+					Agent: appconfig.AgentInfo{
+						Version: "3.1.0.0",
+					},
+				},
+			}
+
+			iprProvider := &stubs.InnerProvider{ProviderName: IPRProviderName, RetrieveErr: j.iprRetrieveErr}
+			ssmProvider := &stubs.InnerProvider{ProviderName: SsmEc2ProviderName, RetrieveErr: j.ssmRetrieveErr}
+			ec2RoleProvider.InnerProviders = &EC2InnerProviders{
+				IPRProvider:    iprProvider,
+				SsmEc2Provider: ssmProvider,
+			}
+
+			// Act
+			creds, err := ec2RoleProvider.Retrieve()
+
+			//Assert
+			assert.Error(t, err)
+			assert.Equal(t, iprEmptyCredential, creds)
+			assert.Equal(t, CredentialSourceEC2, ec2RoleProvider.credentialSource)
+		})
+	}
+
 }
 
 func TestEC2RoleProvider_GetInnerProvider_ReturnsIPRProvider_WhenCredentialSourceEmpty(t *testing.T) {
