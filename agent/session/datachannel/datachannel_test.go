@@ -27,6 +27,9 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/log"
+	contextmocks "github.com/aws/amazon-ssm-agent/agent/mocks/context"
+	logmocks "github.com/aws/amazon-ssm-agent/agent/mocks/log"
+	taskmocks "github.com/aws/amazon-ssm-agent/agent/mocks/task"
 	communicatorMocks "github.com/aws/amazon-ssm-agent/agent/session/communicator/mocks"
 	mgsConfig "github.com/aws/amazon-ssm-agent/agent/session/config"
 	mgsContracts "github.com/aws/amazon-ssm-agent/agent/session/contracts"
@@ -43,12 +46,12 @@ import (
 )
 
 var (
-	mockContext                                = context.NewMockDefault()
-	mockLog                                    = log.NewMockLog()
+	mockContext                                = contextmocks.NewMockDefault()
+	mockLog                                    = logmocks.NewMockLog()
 	mockService                                = &serviceMock.Service{}
 	mockWsChannel                              = &communicatorMocks.IWebSocketChannel{}
 	mockCipher                                 = &cryptoMocks.IBlockCipher{}
-	mockCancelFlag                             = &task.MockCancelFlag{}
+	mockCancelFlag                             = &taskmocks.MockCancelFlag{}
 	clientId                                   = "dd01e56b-ff48-483e-a508-b5f073f31b16"
 	createdDate                                = uint64(1503434274948)
 	sessionId                                  = "2b196342-d7d4-436e-8f09-3883a1116ac3"

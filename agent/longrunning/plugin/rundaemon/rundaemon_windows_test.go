@@ -24,10 +24,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/framework/processor/executer/iohandler"
 	iohandlermocks "github.com/aws/amazon-ssm-agent/agent/framework/processor/executer/iohandler/mock"
-	"github.com/aws/amazon-ssm-agent/agent/task"
+	contextmocks "github.com/aws/amazon-ssm-agent/agent/mocks/context"
+	"github.com/aws/amazon-ssm-agent/agent/mocks/task"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -73,7 +75,7 @@ func MockIsDaemonRunningExecutor(p *Plugin) bool {
 
 // Test to perform a Start followed by a Stop operation
 func TestSingleStartStop(t *testing.T) {
-	context := context.NewMockDefault()
+	context := contextmocks.NewMockDefault()
 	cancelFlag := task.NewMockDefault()
 	ioHandler := &iohandlermocks.MockIOHandler{}
 	p, _ := NewPlugin(context, pluginConfig)
@@ -84,7 +86,7 @@ func TestSingleStartStop(t *testing.T) {
 	StartDaemonHelperExecutor = MockStartDaemonHelperExecutor
 	IsDaemonRunningExecutor = MockIsDaemonRunningExecutor
 	t.Logf("Daemon starting")
-	err := p.Start("powershell Sleep 5", "", cancelFlag, ioHandler)
+	err := p.Start(appconfig.PowerShellPluginCommandName+" Sleep 5", "", cancelFlag, ioHandler)
 	assert.NoError(t, err, fmt.Sprintf("Expected no error but got %v", err))
 	time.Sleep(2 * time.Second)
 	t.Logf("Daemon is running")
@@ -105,7 +107,7 @@ func TestSingleStartStop(t *testing.T) {
 
 // Test to perform Successive Starts
 func TestSuccessiveStarts(t *testing.T) {
-	context := context.NewMockDefault()
+	context := contextmocks.NewMockDefault()
 	cancelFlag := task.NewMockDefault()
 	ioHandler := &iohandlermocks.MockIOHandler{}
 
@@ -118,7 +120,7 @@ func TestSuccessiveStarts(t *testing.T) {
 	StartDaemonHelperExecutor = MockStartDaemonHelperExecutor
 	IsDaemonRunningExecutor = MockIsDaemonRunningExecutor
 	t.Logf("Daemon starting")
-	p.Start("powershell Sleep 5", "", cancelFlag, ioHandler)
+	p.Start(appconfig.PowerShellPluginCommandName+" Sleep 5", "", cancelFlag, ioHandler)
 	time.Sleep(1 * time.Second)
 	t.Logf("Daemon is running")
 	if IsDaemonRunningExecutor(p) {
@@ -145,7 +147,7 @@ func TestSuccessiveStarts(t *testing.T) {
 
 // Test to perform Multiple Start-Stops
 func TestMultipleStartStop(t *testing.T) {
-	context := context.NewMockDefault()
+	context := contextmocks.NewMockDefault()
 	cancelFlag := task.NewMockDefault()
 	ioHandler := &iohandlermocks.MockIOHandler{}
 	p, _ := NewPlugin(context, pluginConfig)
@@ -158,7 +160,7 @@ func TestMultipleStartStop(t *testing.T) {
 
 	for i := 0; i < 50; i++ {
 		t.Logf("Daemon starting")
-		p.Start("powershell Sleep 5", "", cancelFlag, ioHandler)
+		p.Start(appconfig.PowerShellPluginCommandName+" Sleep 5", "", cancelFlag, ioHandler)
 		time.Sleep(5 * time.Second)
 		if p.Process != nil {
 			proc, err := os.FindProcess(p.Process.Pid)
@@ -181,7 +183,7 @@ func TestMultipleStartStop(t *testing.T) {
 
 // Test to perform stop without an associated start
 func TestStopWithoutStart(t *testing.T) {
-	context := context.NewMockDefault()
+	context := contextmocks.NewMockDefault()
 	cancelFlag := task.NewMockDefault()
 	p, _ := NewPlugin(context, pluginConfig)
 	DaemonCmdExecutor = MockRunDaemonExecutorWithNoError

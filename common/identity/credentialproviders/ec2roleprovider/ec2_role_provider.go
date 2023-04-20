@@ -22,12 +22,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/amazon-ssm-agent/common/runtimeconfig"
-
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/log"
+	"github.com/aws/amazon-ssm-agent/agent/sdkutil"
 	"github.com/aws/amazon-ssm-agent/agent/version"
 	"github.com/aws/amazon-ssm-agent/common/identity/credentialproviders/ssmec2roleprovider"
+	"github.com/aws/amazon-ssm-agent/common/runtimeconfig"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -62,19 +62,27 @@ func (p *EC2RoleProvider) GetInnerProvider() IInnerProvider {
 // Retrieve returns instance profile role credentials if it has sufficient systems manager permissions and
 // returns ssm provided credentials otherwise. If neither can be retrieved then empty credentials are returned
 func (p *EC2RoleProvider) Retrieve() (credentials.Value, error) {
-	p.Log.Debug("attempting to retrieve instance profile role")
+	p.Log.Debug("Attempting to retrieve instance profile role")
 	if iprCredentials, err := p.iprCredentials(p.SsmEndpoint); err != nil {
-		p.Log.Debugf("failed to connect to Systems Manager with instance profile role credentials. Err: %v", err)
+		errCode := sdkutil.GetAwsErrorCode(err)
+		if _, ok := exceptionsForDefaultHostMgmt[errCode]; ok {
+			p.Log.Warnf("Failed to connect to Systems Manager with instance profile role credentials. Err: %v", err)
+		} else {
+			p.credentialSource = CredentialSourceEC2
+			return iprEmptyCredential, fmt.Errorf("instance profile role could not be checked for ssm permissions. Err: %w", err)
+		}
 	} else {
+		p.Log.Info("Successfully connected with instance profile role credentials")
 		p.credentialSource = CredentialSourceEC2
 		return iprCredentials.Get()
 	}
 
-	p.Log.Debug("attempting to retrieve role from Systems Manager")
+	p.Log.Debug("Attempting to retrieve role from Systems Manager")
 	if ssmCredentials, err := p.ssmEc2Credentials(p.SsmEndpoint); err != nil {
-		p.Log.Debugf("failed to connect to Systems Manager with SSM role credentials. %v", err)
+		p.Log.Warnf("Failed to connect to Systems Manager with SSM role credentials. %v", err)
 		p.credentialSource = CredentialSourceEC2
 	} else {
+		p.Log.Info("Successfully connected with Systems Manager role credentials")
 		p.credentialSource = CredentialSourceSSM
 		return ssmCredentials.Get()
 	}
@@ -104,7 +112,7 @@ func (p *EC2RoleProvider) iprCredentials(ssmEndpoint string) (*credentials.Crede
 func (p *EC2RoleProvider) updateEmptyInstanceInformation(ssmEndpoint string, roleCredentials *credentials.Credentials) error {
 	ssmClient := newV4ServiceWithCreds(p.Log.WithContext("SSMService"), p.Config, roleCredentials, p.InstanceInfo.Region, ssmEndpoint)
 
-	p.Log.Debugf("calling UpdateInstanceInformation with agent version %s", p.Config.Agent.Version)
+	p.Log.Debugf("Calling UpdateInstanceInformation with agent version %s", p.Config.Agent.Version)
 	// Call update instance information with instance profile role
 	input := &ssm.UpdateInstanceInformationInput{
 		AgentName:    aws.String(agentName),
@@ -156,12 +164,11 @@ func (p *EC2RoleProvider) ShareProfile() string {
 
 // SharesCredentials returns true if credentials refresher in core agent should save returned credentials to disk
 func (p *EC2RoleProvider) SharesCredentials() bool {
-
 	// this condition is to make newer workers compatible with older agent
 	// Older core agent does not populate ShareFile and ShareProfile for EC2.
 	runtimeConfigClient := runtimeconfig.NewIdentityRuntimeConfigClient()
 	if configVal, err := runtimeConfigClient.GetConfig(); err == nil {
-		if strings.TrimSpace(configVal.ShareProfile) == "" || strings.TrimSpace(configVal.ShareFile) == "" {
+		if strings.TrimSpace(configVal.ShareFile) == "" {
 			p.CredentialProfile = ""
 			p.ShareFileLocation = ""
 			return false

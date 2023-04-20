@@ -24,6 +24,7 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/messageservice/messagehandler"
 	"github.com/aws/amazon-ssm-agent/agent/messageservice/messagehandler/mocks"
+	contextmocks "github.com/aws/amazon-ssm-agent/agent/mocks/context"
 	mdsService "github.com/aws/amazon-ssm-agent/agent/runcommand/mds"
 	runcommandmock "github.com/aws/amazon-ssm-agent/agent/runcommand/mock"
 	"github.com/aws/amazon-ssm-agent/agent/sdkutil"
@@ -49,9 +50,9 @@ var (
 
 type MDSInteractorTestSuite struct {
 	suite.Suite
-	contextMock   *context.Mock
+	contextMock   *contextmocks.Mock
 	mdsMock       *runcommandmock.MockedMDS
-	mdsInteractor MDSInteractor
+	mdsInteractor *MDSInteractor
 }
 
 func TestMDSInteractorTestSuite(t *testing.T) {
@@ -59,12 +60,12 @@ func TestMDSInteractorTestSuite(t *testing.T) {
 }
 
 func (suite *MDSInteractorTestSuite) SetupTest() {
-	contextMock := context.NewMockDefault()
+	contextMock := contextmocks.NewMockDefault()
 	mdsMock := new(runcommandmock.MockedMDS)
 	newMdsService = func(context context.T) mdsService.Service {
 		return mdsMock
 	}
-	interactor := MDSInteractor{
+	interactor := &MDSInteractor{
 		context:              contextMock,
 		service:              mdsMock,
 		messagePollWaitGroup: &sync.WaitGroup{},
